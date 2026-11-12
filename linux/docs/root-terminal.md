@@ -1,5 +1,7 @@
 # Root terminal
 
+For 2.03, use [the Jiritsu backend](jiritsu.md). The legacy terminal/FileControl procedure below remains the 2.02 route.
+
 After service authentication, the camera can expose a debug terminal. On the
 tested ZV-E10 firmware the shell runs with Uid/Gid 0.
 

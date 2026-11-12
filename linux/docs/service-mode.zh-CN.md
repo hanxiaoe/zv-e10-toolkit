@@ -1,5 +1,7 @@
 # 服务模式
 
+2.03 请使用 [Jiritsu 后端](jiritsu.zh-CN.md)。下文原有终端/FileControl 流程保留用于 2.02。
+
 本工具通过 Sony 服务模式（“Senser”协议）与相机通信，传输层由 Sony-PMCA-RE 实现。
 
 ## 前提

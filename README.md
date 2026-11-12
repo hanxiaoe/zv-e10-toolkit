@@ -1,5 +1,7 @@
 # Sony ZV-E10 service-interface and BootROM tools
 
+[2.03 Jiritsu shell and slow backup: about 1.3 MiB/s; a partial 1.68 GB read was tested. See the exact validation limits and cleanup procedure.](linux/docs/jiritsu.md)
+
 **English** | [简体中文](README.zh-CN.md)
 
 This repository provides two sets of tools for the Sony ZV-E10.

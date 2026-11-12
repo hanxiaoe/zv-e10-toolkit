@@ -1,5 +1,7 @@
 # Sony ZV-E10 服务接口与 BootROM 工具
 
+[2.03 Jiritsu 持续会话与慢速备份：约 1.3 MiB/s，实测读取约 1.68 GB 后主动中止。完整范围及清理方法见说明。](linux/docs/jiritsu.zh-CN.md)
+
 **简体中文** | [English](README.md)
 
 本仓库提供 Sony ZV-E10 的两组工具。

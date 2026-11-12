@@ -1,5 +1,7 @@
 # Linux 系统内操作
 
+[系统 2.03 使用新增 Jiritsu 后端，临时工作区上传需要明确执行授权；慢速备份默认单遍。](docs/jiritsu.zh-CN.md)
+
 **简体中文** | [English](README.md)
 
 本目录提供通过 ZV-E10 USB 服务接口使用的主机工具，包括终端连接、文件读取、eMMC 备份、BootROM 读取和离线校验。使用时相机需能够启动 Linux 并接受 USB 服务连接。

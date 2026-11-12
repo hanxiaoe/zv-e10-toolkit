@@ -29,11 +29,14 @@ import os
 import re
 import sys
 import time
+import signal
+import threading
 from pathlib import Path
 
 import zve10_common as common
 
 IDLE_TIMEOUT = 600
+STOP_REQUESTED = threading.Event()
 DENY = (
     (r"\bmkfs\b|\bmke2fs\b|\bfdisk\b|\bflashcp\b|\bflash_erase\b",
      "filesystem/partition tooling"),
@@ -170,7 +173,11 @@ def prepare_session(path: Path) -> Path:
 
 
 def serve(session: Path, write_mode: bool, allow_module_ops: bool,
-          driver: str) -> None:
+          driver: str, backend_name='terminal', firmware='2.02', authorized_exec=False) -> None:
+    if firmware == '2.03' and backend_name != 'jiritsu':
+        raise ValueError('2.03 requires the Jiritsu backend')
+    if backend_name == 'jiritsu' and not authorized_exec:
+        raise ValueError('Jiritsu temporarily uploads code; requires --owner-authorized-exec')
     inbox = session / "requests"
     responses = session / "responses"
     scope = (
@@ -189,17 +196,30 @@ def serve(session: Path, write_mode: bool, allow_module_ops: bool,
         "scope": scope,
         "commands_completed": 0,
         "refused_count": 0,
+        "backend": backend_name,
+        "firmware": firmware,
     }
     publish(session / "state.json", state)
 
     def callback(camera):
         camera.readHasp()
-        common.check_version(camera)
         attempted = False
+        backend = None
         try:
-            attempted = True
-            camera.setTerminalEnable(True)
-            common.drain(camera.dev, 1.0)
+            if backend_name == 'jiritsu':
+                from zve10_jiritsu import JiritsuBackend
+                def cancelled():
+                    marker = session / 'cancel-backup'
+                    return STOP_REQUESTED.is_set() or (marker.is_file() and not marker.is_symlink()
+                        and (CLIENT_UID is None or marker.stat().st_uid == CLIENT_UID))
+                backend = JiritsuBackend(camera, session, firmware, cancelled)
+                backend.start()
+                state.update(backend.status)
+            else:
+                common.check_version(camera)
+                attempted = True
+                camera.setTerminalEnable(True)
+                common.drain(camera.dev, 1.0)
             state["state"] = "ready"
             state["session_started"] = time.time()
             publish(session / "state.json", state)
@@ -207,6 +227,9 @@ def serve(session: Path, write_mode: bool, allow_module_ops: bool,
             last = time.monotonic()
             closing = False
             while not closing:
+                if STOP_REQUESTED.is_set():
+                    state['close_reason'] = 'signal requested; completed current USB transaction'
+                    break
                 requests = sorted(inbox.glob("*.json"))
                 if not requests:
                     if time.monotonic() - last > IDLE_TIMEOUT:
@@ -238,17 +261,22 @@ def serve(session: Path, write_mode: bool, allow_module_ops: bool,
                         closing = True
                         break
                     handler = REQUEST_HANDLER
+                    if action == 'raw-backup':
+                        from zve10_backup_session import dispatch
+                        handler = dispatch
                     if handler is None and action in ("backup-read", "backup-write"):
                         from zve10_backup_properties import dispatch
                         handler = dispatch
                     if handler is not None and action != "shell":
                         try:
                             state["state"] = "executing"
+                            state['action'] = action
                             publish(session / "state.json", state)
                             result = handler(camera, request, session, write_mode)
                             state["commands_completed"] += 1
                             publish(responses / request_path.name, result)
                             state["state"] = "ready"
+                            state.pop('action', None)
                             publish(session / "state.json", state)
                         except Exception as exc:
                             publish(responses / request_path.name, {"error": str(exc)})
@@ -290,6 +318,11 @@ def serve(session: Path, write_mode: bool, allow_module_ops: bool,
                                  "error": repr(exc)})
                         raise
         finally:
+            if backend is not None:
+                try:
+                    backend.close()
+                finally:
+                    state.update(backend.status)
             if attempted:
                 camera.setTerminalEnable(False)
                 state["terminal_closed"] = True
@@ -322,6 +355,10 @@ def main() -> None:
     parser.add_argument("--allow-module-swap", action="store_true",
                         help="also allow insmod/rmmod (requires write mode)")
     parser.add_argument("--driver", default="libusb")
+    parser.add_argument('--backend', choices=('terminal', 'jiritsu'), default='terminal')
+    parser.add_argument('--firmware', choices=('2.02', '2.03'), default='2.02')
+    parser.add_argument('--owner-authorized-exec', action='store_true',
+                        help='authorize temporary Jiritsu root-loader upload; requires power removal after closing')
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
@@ -330,6 +367,13 @@ def main() -> None:
         return
     if args.allow_module_swap and not args.owner_authorized_write:
         raise SystemExit("--allow-module-swap requires --owner-authorized-write")
+    if args.firmware == '2.03' and args.backend != 'jiritsu':
+        raise SystemExit('Use --backend jiritsu for system 2.03')
+    if args.backend == 'jiritsu' and not args.owner_authorized_exec:
+        raise SystemExit('Jiritsu requires --owner-authorized-exec (temporary camera workspace writes)')
+    STOP_REQUESTED.clear()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: STOP_REQUESTED.set())
 
     CLIENT_UID = args.client_uid
     if CLIENT_UID is None:
@@ -362,7 +406,8 @@ def main() -> None:
                 print("Client: .venv/bin/python host/zve10_terminal_client.py",
                       flush=True)
                 serve(session, args.owner_authorized_write,
-                      args.allow_module_swap, args.driver)
+                      args.allow_module_swap, args.driver, args.backend, args.firmware,
+                      args.owner_authorized_exec)
     finally:
         if os.geteuid() == 0 and CLIENT_UID is not None:
             common.restore_owner(pointer)

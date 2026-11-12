@@ -2,6 +2,13 @@
 
 [**English**](hardware.md) | [简体中文](hardware.zh-CN.md)
 
+## Wiring photo
+
+![RP2040 Pico wired to the 24-pin USB-C breakout](images/hardware.png)
+
+Physical wiring used for this project's Pico injector. Follow the pin assignments
+in the diagram below; the wire colors in the photo are only a visual reference.
+
 ## Wiring diagram
 
 ```
