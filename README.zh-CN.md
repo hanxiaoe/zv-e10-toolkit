@@ -1,6 +1,8 @@
 # Sony ZV-E10 服务接口与 BootROM 工具
 
-[2.03 Jiritsu 持续会话与慢速备份：约 1.3 MiB/s，实测读取约 1.68 GB 后主动中止。完整范围及清理方法见说明。](linux/docs/jiritsu.zh-CN.md)
+AI Agent 连接前先读 [AGENTS.md](AGENTS.md) 和[会话操作规范](linux/docs/agent-workflow.zh-CN.md)。
+
+[2.03 Jiritsu 已验证完整用户区+B0/B1 单遍备份；独立 RAM 大缓冲实验平均 1.989 MiB/s，正式 CLI 默认值与验证范围见说明。](linux/docs/jiritsu.zh-CN.md)
 
 **简体中文** | [English](README.md)
 
@@ -56,7 +58,7 @@ fastboot/                    Fastboot 工具（BootROM 注入启动）
 
 ## 当前范围
 
-- 现有文档的实机验证对象是 ZV-E10、固件 `30110_05.2025031501`，主机为 macOS。
+- 已有实机记录覆盖 ZV-E10 的已知 2.02、2.03 版本，主机为 macOS；各后端的具体范围与限制见 Jiritsu 说明。
 - fastboot 分区读写、sparse、回读校验和恢复已有实机记录；约 4 分钟的自动复位不再中断 fastboot 会话，fastboot 会一直保持到主动重启或断电，大分区操作可一次完成。
 - 恢复脚本支持 16 个用户分区，不处理 boot0/boot1、分区表或硬件故障。
 - Linux 路线读取的 BootROM 范围为 24 KiB；裸机 `peek` 允许的地址范围见[内存读取说明](fastboot/docs/exploration.zh-CN.md)。

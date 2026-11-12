@@ -89,7 +89,7 @@ def refuse_reason(command: str, write_mode: bool = False,
             return "refused: /dev access is disabled in read-only mode"
         if FIND_WRITE.search(low):
             return "refused: find action flags are disabled in read-only mode"
-        if not READ_ONLY.match(command):
+        if not READ_ONLY.match(command) and not re.fullmatch(r"\s*busybox\s+--list\s*", command):
             return ("refused: not in the read-only allow-list "
                     "(use --owner-authorized-write for a full shell)")
     return None
@@ -98,6 +98,7 @@ def refuse_reason(command: str, write_mode: bool = False,
 def self_test() -> None:
     checks = 0
     allowed_ro = (
+        "busybox --list",
         "busybox cat /proc/partitions",
         "ls -la /",
         "busybox grep -E '^(Name|Pid):' /proc/$$/status",

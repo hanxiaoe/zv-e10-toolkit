@@ -42,11 +42,30 @@ class Tests(unittest.TestCase):
         self.assertEqual(common.read_path(b.camera,'/version.txt'),(0,b'known'))
         self.assertEqual(common.command(b.camera.dev,'test','pwd',1)['output'],'ok')
 
+    def test_pseudo_files_never_use_get_file(self):
+        b=self.backend()
+        with patch.object(jit,'read_file') as read:
+            for path in ('/proc/self/status','/sys/class/block/nflasha/size'):
+                with self.assertRaisesRegex(ValueError,'shell cat'):b.read_path(path)
+            read.assert_not_called()
+
     def test_unknown_block_and_changed_capacity_refused(self):
         b=self.backend();b.run=Mock(return_value='1')
         with self.assertRaises(ValueError): b.read_path('/dev/unknown')
         with self.assertRaisesRegex(ValueError,'capacity'): b.read_path('/dev/nflasha5')
         self.assertEqual(b.run.call_count,1)
+
+    def test_invalid_chunk_size_refused_before_camera_io(self):
+        b=self.backend();b.chunk_bytes=8388608;b.run=Mock()
+        with self.assertRaisesRegex(ValueError,'chunk size'):b.read_path('/dev/nflashaB0')
+        b.run.assert_not_called()
+
+    def test_large_chunk_requires_exclusive_tmpfs_before_dd(self):
+        b=self.backend();b.chunk_bytes=1048576;b.run=Mock(return_value='8192')
+        with patch.object(jit,'read_file') as read:
+            with self.assertRaisesRegex(ValueError,'dedicated tmpfs'):b.read_path('/dev/nflashaB0')
+            read.assert_not_called()
+        self.assertFalse(any(' dd ' in call.args[0] for call in b.run.call_args_list))
 
     def test_bad_chunk_hash_stops_and_cleans_ram(self):
         b=self.backend();b.run=Mock(side_effect=['1','', '0'*64+'  chunk\n',''])

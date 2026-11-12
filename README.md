@@ -1,6 +1,8 @@
 # Sony ZV-E10 service-interface and BootROM tools
 
-[2.03 Jiritsu shell and slow backup: about 1.3 MiB/s; a partial 1.68 GB read was tested. See the exact validation limits and cleanup procedure.](linux/docs/jiritsu.md)
+AI agents: read [AGENTS.md](AGENTS.md) and the [session workflow](linux/docs/agent-workflow.md) before connecting.
+
+[2.03 Jiritsu: complete user+B0/B1 single pass verified; dedicated RAM-buffer experiment averaged 1.989 MiB/s. Public CLI defaults and validation scope are documented here.](linux/docs/jiritsu.md)
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -57,7 +59,7 @@ See [development and validation](CONTRIBUTING.md) for building and testing.
 
 ## Current scope
 
-- Existing hardware validation covers ZV-E10 firmware `30110_05.2025031501` with macOS hosts.
+- Hardware records cover known ZV-E10 2.02 and 2.03 on macOS; see the Jiritsu guide for per-backend scope and limitations.
 - Fastboot partition reads, writes, sparse images, readback and partition recovery have hardware validation records. The approximately four-minute automatic reset no longer interrupts fastboot sessions; fastboot remains available until reboot or power-off, so large partition operations can run in one session.
 - The recovery script supports 16 user partitions; it does not handle boot0/boot1, the partition table or hardware faults.
 - The Linux route reads a 24 KiB BootROM range. See [memory read documentation](fastboot/docs/exploration.md) for the permitted bare-metal `peek` ranges.
