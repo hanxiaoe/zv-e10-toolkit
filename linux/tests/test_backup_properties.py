@@ -88,5 +88,26 @@ class Tests(unittest.TestCase):
                 self.assertIs(handler.call_args.args[0], camera)
                 self.assertEqual(camera.terminal,[True,False])
 
+    def test_long_action_does_not_consume_idle_budget(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);(folder/'requests').mkdir();(folder/'responses').mkdir()
+            (folder/'requests'/('0'*32+'.json')).write_text('{"action":"custom"}')
+            camera=Camera();clock=[0.0];slept=[]
+            def action(*args):
+                clock[0]=1000.0
+                return {'completed':True}
+            def wait(seconds):
+                slept.append(seconds)
+                (folder/'requests'/('1'*32+'.json')).write_text('{"action":"close"}')
+            with patch.object(server.common,'connect',side_effect=lambda cb,driver:cb(camera)), \
+                    patch.object(server.common,'check_version'), patch.object(server.common,'drain'), \
+                    patch.object(server,'CLIENT_UID',os.getuid()), patch.object(server,'REQUEST_HANDLER',action), \
+                    patch.object(server.time,'monotonic',side_effect=lambda:clock[0]), \
+                    patch.object(server.time,'sleep',side_effect=wait):
+                server.serve(folder,False,False,'libusb')
+            self.assertTrue(slept)
+            self.assertNotEqual(client.read_state(folder).get('close_reason'),'idle timeout')
+            self.assertTrue((folder/'responses'/('1'*32+'.json')).is_file())
+
 
 if __name__ == '__main__': unittest.main()

@@ -1,5 +1,6 @@
 """Jiritsu-backed persistent shell and bounded block reads (no boot persistence)."""
 import hashlib
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import struct
@@ -143,6 +144,68 @@ done
         if result['exit_code']:
             raise RuntimeError('Camera command failed: ' + str(result))
         return result['output']
+
+    @contextmanager
+    def backup_buffer(self, chunk_kib=512):
+        """Own only this session's RAM mount; keep command files outside it."""
+        if type(chunk_kib) is not int or chunk_kib not in (512, 1024, 2048, 4096):
+            raise ValueError('chunk_kib must be 512, 1024, 2048 or 4096')
+        if getattr(self, 'dedicated_tmpfs', False) or hasattr(self, 'chunk_dir'):
+            raise ValueError('A dedicated buffer is already active')
+        old_chunk = self.chunk_bytes
+        if chunk_kib == 512:
+            try:
+                self.chunk_bytes = 524288
+                yield {'chunk_bytes': 524288, 'dedicated_tmpfs_bytes': 0}
+            finally:
+                self.chunk_bytes = old_chunk
+            return
+        mem = self.run('busybox cat /proc/meminfo')
+        values = {k: int(v) for k, v in re.findall(
+            r'^(MemFree|Cached|Buffers|Shmem):\s+(\d+) kB', mem, re.M)}
+        if not {'MemFree', 'Cached', 'Buffers'} <= values.keys():
+            raise ValueError('Missing memory capacity information')
+        available = sum(values[k] for k in ('MemFree', 'Cached', 'Buffers')) - values.get('Shmem', 0)
+        if available < 32768:
+            raise ValueError('Need at least 32 MiB free/reclaimable memory for the 8 MiB RAM buffer')
+        bulk = self.ram + '/backup-buffer'
+        created = attempted = False
+        self.status['backup_buffer_removed'] = False
+        try:
+            self.run('busybox mkdir ' + bulk)
+            created = True
+            attempted = True
+            self.run('busybox mount -t tmpfs -o size=8m,mode=700 zvbackup ' + bulk)
+            mounts = self.run('busybox cat /proc/mounts')
+            rows = [line.split() for line in mounts.splitlines() if len(line.split()) >= 4 and line.split()[1] == bulk]
+            if len(rows) != 1 or rows[0][:3] != ['zvbackup', bulk, 'tmpfs']:
+                raise RuntimeError('Dedicated backup tmpfs identity not confirmed')
+            self.chunk_dir, self.dedicated_tmpfs = bulk, True
+            self.chunk_bytes = chunk_kib * 1024
+            yield {'chunk_bytes': self.chunk_bytes, 'dedicated_tmpfs_bytes': 8388608,
+                   'free_reclaimable_kib': available}
+        finally:
+            self.chunk_bytes = old_chunk
+            self.dedicated_tmpfs = False
+            if hasattr(self, 'chunk_dir'):
+                del self.chunk_dir
+            try:
+                if attempted:
+                    mounts = self.run('busybox cat /proc/mounts')
+                    rows = [line.split() for line in mounts.splitlines() if len(line.split()) >= 3 and line.split()[1] == bulk]
+                    if rows:
+                        if len(rows) != 1 or rows[0][:3] != ['zvbackup', bulk, 'tmpfs']:
+                            raise RuntimeError('Unexpected mount identity; do not touch it')
+                        self.run('busybox rm -f ' + bulk + '/chunk; cd /; busybox umount ' + bulk)
+                        mounts = self.run('busybox cat /proc/mounts')
+                        if any(line.split()[1] == bulk for line in mounts.splitlines() if len(line.split()) >= 2):
+                            raise RuntimeError('Backup RAM buffer remains mounted')
+                if created:
+                    self.run('busybox rmdir ' + bulk)
+                self.status['backup_buffer_removed'] = True
+            except Exception as exc:
+                self.status['backup_buffer_cleanup_error'] = repr(exc)
+                raise
 
     def read_path(self, path, sink=None):
         if path in ('/proc', '/sys') or path.startswith(('/proc/', '/sys/')):

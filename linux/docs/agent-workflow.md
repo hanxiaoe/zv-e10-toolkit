@@ -6,7 +6,7 @@ Read [AGENTS.md](../../AGENTS.md) before device access and [Jiritsu instructions
 
 ## Prepare once, keep one connection
 
-Check interpreter, imports, dependency paths and CLI help as the normal user before requesting administrator access. Reuse one server and request queue. Check state.json; wait for ready before the next request or owner menu interaction. The default idle timeout is 600 seconds, not indefinite keepalive. Do not open competing probes against an existing server.
+Check interpreter, imports, dependency paths and CLI help as the normal user before requesting administrator access. Reuse one server and request queue. Check state.json; wait for ready before the next request or owner menu interaction. The default idle timeout is 600 seconds after completion; --idle-timeout 3600 allows one idle hour. Active backup time does not consume this budget. Do not open competing probes against an existing server.
 
 Run these camera commands through the existing read-only client:
 
@@ -27,7 +27,7 @@ Mounts, not directory names, determine storage. The tested /tmp_network tmpfs is
 
 Larger chunks were tested in a separate 8 MiB tmpfs, with commands staying in the original directory. Check free/reclaimable memory, exact mount identity, capacity and contents; unmount it and remove its mountpoint afterwards. Do not enlarge shared mounts, spill chunks into flash or touch another session's files.
 
-A complete user+B0+B1 single pass with 4 MiB chunks took 940.956 seconds (1.989 MiB/s), with chunk and saved-file host checks passing. A research wrapper managed that mount lifecycle. The public CLI has no large-buffer switch yet; do not invent one or improvise a new experimental launcher during an ordinary backup task.
+A complete user+B0+B1 single pass with 4 MiB chunks took 940.956 seconds (1.989 MiB/s), with chunk and saved-file host checks passing. The public raw-backup action now accepts chunk_kib=4096 and manages the mount lifecycle automatically. Its integration has offline failure tests; the underlying RAM/read sequence has hardware validation. The default remains 512 KiB.
 
 ## Handle failures by cause
 

@@ -1,5 +1,7 @@
 """Slow raw backup action on the existing Jiritsu connection; no second USB open."""
 import time
+import shutil
+import uuid
 from pathlib import Path
 
 import zve10_backup_raw as raw
@@ -13,7 +15,13 @@ def dispatch(camera, request, session, write_mode):
     passes = request.get('passes', 1)
     if type(passes) is not int or passes not in (1, 2):
         raise ValueError('passes must be 1 or 2')
-    folder = Path(session) / time.strftime('raw-backup-%Y%m%d-%H%M%S')
+    chunk_kib = request.get('chunk_kib', 512)
+    if type(chunk_kib) is not int or chunk_kib not in (512, 1024, 2048, 4096):
+        raise ValueError('chunk_kib must be 512, 1024, 2048 or 4096')
+    if shutil.disk_usage(session).free < passes * sum(raw.REGIONS.values()) + 1024**3:
+        raise ValueError('Need backup capacity plus 1 GiB free host space')
+    started = time.monotonic()
+    folder = Path(session) / (time.strftime('raw-backup-%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     folder.mkdir(mode=0o700)
     common.restore_owner(folder)
     raw.OUT = folder
@@ -24,25 +32,32 @@ def dispatch(camera, request, session, write_mode):
     # A pre-existing cancellation is honored; it is never silently discarded.
     backend.cancellable = True
     try:
-        raw.RESULT['partitions'] = backend.run('cat /proc/partitions')
-        raw.RESULT['mounts'] = backend.run('cat /proc/mounts')
-        raw.RESULT['layout'] = backend.run('for p in /sys/class/block/nflasha*; do echo DEVICE:$p; for f in dev size start ro; do echo FIELD:$f; cat "$p/$f" 2>/dev/null; done; done')
-        raw.save()
-        for name in raw.REGIONS:
-            rows = [raw.receive(camera, name, i) for i in range(1, passes+1)]
-            if passes == 2:
-                a, b = rows
-                raw.RESULT.setdefault('comparisons', {})[name] = {
-                    'identical': a['sha256'] == b['sha256'],
-                    'differing_1MiB_chunks': [i for i,(x,y) in enumerate(zip(a['chunk_sha256_1MiB'],b['chunk_sha256_1MiB'])) if x != y]}
-                if name != 'nflasha' and a['sha256'] != b['sha256']:
-                    raise RuntimeError('Boot-area double read mismatch')
-        raw.RESULT['completed'] = True
+        with backend.backup_buffer(chunk_kib) as buffer:
+            raw.RESULT['buffer'] = buffer
+            raw.RESULT['partitions'] = backend.run('cat /proc/partitions')
+            raw.RESULT['mounts'] = backend.run('cat /proc/mounts')
+            raw.RESULT['layout'] = backend.run('for p in /sys/class/block/nflasha*; do echo DEVICE:$p; for f in dev size start ro; do echo FIELD:$f; cat "$p/$f" 2>/dev/null; done; done')
+            raw.save()
+            for name in raw.REGIONS:
+                rows = [raw.receive(camera, name, i) for i in range(1, passes+1)]
+                if passes == 2:
+                    a, b = rows
+                    raw.RESULT.setdefault('comparisons', {})[name] = {
+                        'identical': a['sha256'] == b['sha256'],
+                        'differing_1MiB_chunks': [i for i,(x,y) in enumerate(zip(a['chunk_sha256_1MiB'],b['chunk_sha256_1MiB'])) if x != y]}
+                    if name != 'nflasha' and a['sha256'] != b['sha256']:
+                        raise RuntimeError('Boot-area double read mismatch')
         (folder/'SHA256SUMS').write_text(''.join('%s  %s\n' % (r['sha256'], r['file']) for r in raw.RESULT['reads']))
+        raw.RESULT['completed'] = True
     except BackupCancelled:
         raw.RESULT['cancelled'] = True
         raw.RESULT['reason'] = 'Owner cancelled at a completed data-block boundary'
+    except Exception as exc:
+        raw.RESULT['error'] = repr(exc)
+        raise
     finally:
+        raw.RESULT['seconds'] = time.monotonic() - started
+        raw.RESULT['cleanup'] = dict(backend.status)
         backend.cancellable = False
         for row in raw.RESULT['reads']:
             if not row['complete']:

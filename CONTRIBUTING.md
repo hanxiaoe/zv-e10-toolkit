@@ -78,3 +78,9 @@ readback and the existing persistent session lifecycle with a fake camera.
 They do not import USB dependencies or access hardware.
 
 以上检查通过模拟相机验证原值校验、私密快照、写后读回及原有持久会话的关闭流程，不访问设备。
+
+## Dedicated Jiritsu buffer / 独立 Jiritsu RAM 缓冲
+
+The structured raw-backup action accepts chunk_kib=4096 for a dedicated 8 MiB tmpfs, while omission keeps 512 KiB. Test cancellation, lost mount replies, foreign mount identity, memory refusal, saved-file hash failure and cleanup failure before changing this lifecycle. The underlying RAM/read sequence completed a full hardware pass; the integrated lifecycle changes have offline regression tests. No camera is used by the checks above.
+
+raw-backup 的 chunk_kib=4096 自动管理独立 8 MiB tmpfs，省略参数仍用 512 KiB。改动应检查取消、挂载响应丢失、挂载身份不符、内存不足、保存文件哈希错误与清理失败；这些路径不能生成完整成功标志。
