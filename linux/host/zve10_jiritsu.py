@@ -43,6 +43,7 @@ class JiritsuBackend:
         self.number = 0
         self.started = False
         self.cancellable = False
+        self.chunk_bytes = 524288
         self.cancelled = cancelled
         self.status = {'backend': 'jiritsu', 'requires_power_cycle': False}
 
@@ -144,6 +145,8 @@ done
         return result['output']
 
     def read_path(self, path, sink=None):
+        if path in ('/proc', '/sys') or path.startswith(('/proc/', '/sys/')):
+            raise ValueError('Read proc/sys pseudo-files through shell cat, not Jiritsu GET_FILE')
         if not path.startswith('/dev/'):
             data = read_file(self.camera, path, 32*1048576)
             if sink is not None:
@@ -152,30 +155,62 @@ done
             return 0, data
         if path not in REGIONS:
             raise ValueError('Block reads restricted to known user/boot/WBI regions')
+        chunk_bytes = self.chunk_bytes
+        if type(chunk_bytes) is not int or chunk_bytes not in (524288, 655360, 786432, 1048576, 2097152, 4194304):
+            raise ValueError('Unsupported chunk size')
         name, size = path.split('/')[-1], REGIONS[path]
         if sink is None and size > 64*1048576:
             raise ValueError('Large block reads require a streaming sink')
         live = self.run('cat /sys/class/block/%s/size' % name).strip()
         if not live.isdecimal() or int(live)*512 != size:
             raise ValueError('Runtime block capacity mismatch')
+        chunk_dir = getattr(self, 'chunk_dir', self.ram)
+        if chunk_bytes > 524288:
+            # Larger chunks require an exclusive, separately mounted tmpfs.
+            # This firmware has no df applet; never guess shared free space.
+            if not getattr(self, 'dedicated_tmpfs', False):
+                raise ValueError('Large chunks require a verified dedicated tmpfs')
+            mounts = self.run('busybox cat /proc/mounts')
+            rows = [line.split() for line in mounts.splitlines()
+                    if len(line.split()) >= 4 and line.split()[1:3] == [chunk_dir, 'tmpfs']]
+            options = rows[0][3].split(',') if len(rows) == 1 else []
+            value = next((item[5:] for item in options if item.startswith('size=')), '')
+            match = re.fullmatch(r'(\d+)([kKmM]?)', value)
+            capacity = int(match[1]) * {'':1,'k':1024,'m':1048576}[match[2].lower()] if match else 0
+            if capacity < chunk_bytes + 131072:
+                raise ValueError('Insufficient dedicated tmpfs capacity')
+            entries = self.run('busybox ls -A '+chunk_dir).split()
+            if any(entry != 'chunk' for entry in entries):
+                raise ValueError('Dedicated tmpfs contains unexpected files')
         buffer = bytearray() if sink is None else None
         self.run('sleep 0.01 && ZV_POLL=0.01')
+        stats = dict(chunk_bytes=chunk_bytes, bytes=0, command_seconds=0., transfer_seconds=0., verify_seconds=0.)
+        started = time.monotonic()
+        self.last_read_stats = stats
         try:
-            for offset in range(0, size, 524288):
+            for offset in range(0, size, chunk_bytes):
                 if self.cancellable and self.cancelled():
                     raise BackupCancelled('Cancelled at completed block boundary')
-                count = min(524288, size-offset)
+                count = min(chunk_bytes, size-offset)
+                tick = time.monotonic()
                 text = self.run('busybox dd if=%s of=%s/chunk bs=4096 skip=%d count=%d 2>/dev/null && busybox sha256sum %s/chunk' %
-                                (path, self.ram, offset//4096, count//4096, self.ram))
-                data = read_file(self.camera, self.ram+'/chunk', 524288)
+                                (path, chunk_dir, offset//4096, count//4096, chunk_dir))
+                stats['command_seconds'] += time.monotonic()-tick
+                tick = time.monotonic()
+                data = read_file(self.camera, chunk_dir+'/chunk', count)
+                stats['transfer_seconds'] += time.monotonic()-tick
+                tick = time.monotonic()
                 if len(data) != count or not re.fullmatch(r'[0-9a-f]{64}\s+\S+\s*', text) or hashlib.sha256(data).hexdigest() != text.split()[0]:
                     raise RuntimeError('Chunk length/camera-host hash mismatch')
                 if sink is not None:
                     sink.write(data)
                 else:
                     buffer.extend(data)
+                stats['verify_seconds'] += time.monotonic()-tick
+                stats['bytes'] += len(data)
         finally:
-            self.run('rm -f '+self.ram+'/chunk; ZV_POLL=1')
+            self.run('rm -f '+chunk_dir+'/chunk; ZV_POLL=1')
+            stats['seconds'] = time.monotonic()-started
         return 0, bytes(buffer) if buffer is not None else None
 
     def close(self):
