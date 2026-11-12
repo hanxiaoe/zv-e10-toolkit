@@ -1,5 +1,7 @@
 # Operations inside Linux
 
+[System 2.03 uses the new Jiritsu backend; temporary workspace uploads require explicit execution authorization. Slow backup defaults to one pass.](docs/jiritsu.md)
+
 [简体中文](README.zh-CN.md) | **English**
 
 This directory contains host tools for the ZV-E10 USB service interface: terminal access, file reads, eMMC backup, BootROM reads and offline verification. The camera must boot Linux and accept a USB service connection.

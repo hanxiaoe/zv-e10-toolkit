@@ -1,5 +1,7 @@
 # root 终端
 
+2.03 请使用 [Jiritsu 后端](jiritsu.zh-CN.md)。下文原有终端/FileControl 流程保留用于 2.02。
+
 服务认证之后，相机可以暴露一个调试终端。在实测的 ZV-E10 固件上，shell 的 Uid/Gid 为 0。
 
 ## 打开与关闭

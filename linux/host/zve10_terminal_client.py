@@ -65,8 +65,19 @@ def main() -> None:
     parser.add_argument("--session-dir", help="session directory (default: session/latest.txt)")
     parser.add_argument("--request-json", help="submit one structured action and exit")
     parser.add_argument("--timeout", type=float, default=45.0)
+    parser.add_argument('--cancel-backup', action='store_true',
+                        help='request cancellation at the next data-block boundary')
     args = parser.parse_args()
     session = resolve(args.session_dir)
+    if args.cancel_backup:
+        state = read_state(session)
+        if state.get('action') != 'raw-backup' or state.get('state') != 'executing':
+            raise SystemExit('No executing raw backup in this session')
+        marker = session / 'cancel-backup'
+        with marker.open('x') as stream:
+            stream.write('cancel\n')
+        print('Cancellation requested; wait for the backup result and cleanup.')
+        return
 
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:

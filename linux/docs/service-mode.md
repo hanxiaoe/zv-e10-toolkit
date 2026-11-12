@@ -1,5 +1,7 @@
 # Service mode
 
+For 2.03, use [the Jiritsu backend](jiritsu.md). The legacy terminal/FileControl procedure below remains the 2.02 route.
+
 The toolkit uses Sony's service mode ("Senser" protocol), implemented by
 Sony-PMCA-RE.
 

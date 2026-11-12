@@ -1,5 +1,7 @@
 # 备份方法
 
+2.03 请使用 [Jiritsu 后端](jiritsu.zh-CN.md)。下文原有终端/FileControl 流程保留用于 2.02。
+
 ## 范围
 
 | 节点 | 字节数 |

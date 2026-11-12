@@ -20,6 +20,7 @@ logs/
 
 # Approved self-built payloads only
 !linux/helpers/bootrom-reader/read_page.elf
+!linux/helpers/jiritsu-shell/launch.so
 !fastboot/prebuilt/*.bin
 
 # Rebuildable intermediate files

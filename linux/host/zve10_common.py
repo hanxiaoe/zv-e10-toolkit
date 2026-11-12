@@ -93,6 +93,9 @@ def read_path(camera, path: str, sink=None):
     opening a camera shell.  Returns ``(response, data)``; ``data`` is ``None``
     when a sink is supplied.
     """
+    transport = getattr(camera, '_session_read', None)
+    if transport is not None:
+        return transport(path, sink)
     name = path.encode("ascii")
     name += b"\0" * (4 - len(name) % 4)
     payload = struct.pack("<HH", FILE_CONTROL_READ, len(name)) + name
@@ -149,6 +152,9 @@ def parse_frame(raw: bytes, token: str):
 
 def command(dev, name: str, text: str, timeout: float) -> dict:
     """Run one fixed command on the service terminal and wait for its frame."""
+    transport = getattr(dev, '_session_command', None)
+    if transport is not None:
+        return transport(name, text, timeout)
     token = "%s_%d" % (name, time.monotonic_ns())
     dev.writeTerminal(frame(text, token).encode("ascii"))
     deadline = time.monotonic() + timeout
