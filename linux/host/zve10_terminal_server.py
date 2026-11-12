@@ -161,6 +161,8 @@ def prepare_session(path: Path) -> Path:
     if path.is_symlink():
         raise SystemExit("session directory must not be a symlink")
     path = path.resolve()
+    if path.exists() and any(path.iterdir()):
+        raise SystemExit("session directory must be new or empty; review the previous session first")
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path, 0o700)
     if os.geteuid() == 0 and CLIENT_UID is not None:
@@ -278,6 +280,7 @@ def serve(session: Path, write_mode: bool, allow_module_ops: bool,
                             publish(responses / request_path.name, result)
                             state["state"] = "ready"
                             state.pop('action', None)
+                            last = time.monotonic()
                             publish(session / "state.json", state)
                         except Exception as exc:
                             publish(responses / request_path.name, {"error": str(exc)})
@@ -312,6 +315,7 @@ def serve(session: Path, write_mode: bool, allow_module_ops: bool,
                         publish(responses / request_path.name, result)
                         state["state"] = "ready"
                         state.pop("action", None)
+                        last = time.monotonic()
                         publish(session / "state.json", state)
                     except Exception as exc:  # noqa: BLE001
                         publish(responses / request_path.name,
@@ -344,7 +348,7 @@ def serve(session: Path, write_mode: bool, allow_module_ops: bool,
 
 
 def main() -> None:
-    global CLIENT_UID, CLIENT_GID
+    global CLIENT_UID, CLIENT_GID, IDLE_TIMEOUT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", nargs="?", default="serve", choices=("serve",))
     parser.add_argument("--session-dir", type=Path,
@@ -356,6 +360,8 @@ def main() -> None:
     parser.add_argument("--allow-module-swap", action="store_true",
                         help="also allow insmod/rmmod (requires write mode)")
     parser.add_argument("--driver", default="libusb")
+    parser.add_argument("--idle-timeout", type=int, default=IDLE_TIMEOUT,
+                        help="idle seconds after the last completed operation (default: 600)")
     parser.add_argument('--backend', choices=('terminal', 'jiritsu'), default='terminal')
     parser.add_argument('--firmware', choices=('2.02', '2.03'), default='2.02')
     parser.add_argument('--owner-authorized-exec', action='store_true',
@@ -366,6 +372,9 @@ def main() -> None:
     if args.self_test:
         self_test()
         return
+    if args.idle_timeout <= 0:
+        raise SystemExit("--idle-timeout must be positive")
+    IDLE_TIMEOUT = args.idle_timeout
     if args.allow_module_swap and not args.owner_authorized_write:
         raise SystemExit("--allow-module-swap requires --owner-authorized-write")
     if args.firmware == '2.03' and args.backend != 'jiritsu':

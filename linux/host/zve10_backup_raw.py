@@ -126,17 +126,16 @@ def receive(camera, device: str, iteration: int) -> dict:
                 sink.chunks.append(hashlib.sha256(sink.pending).hexdigest())
             row["chunk_sha256_1MiB"] = sink.chunks
             save()
-    partial.rename(dest)
-
     # Independently re-read from the host disk rather than trusting the
     # receive-time hash alone.
     digest = hashlib.sha256()
-    with dest.open("rb") as handle:
+    with partial.open("rb") as handle:
         for chunk in iter(lambda: handle.read(4 * 1048576), b""):
             digest.update(chunk)
     row["host_reread_sha256"] = digest.hexdigest()
     if row["host_reread_sha256"] != row["sha256"]:
         raise RuntimeError("host saved file hash mismatch")
+    partial.rename(dest)
     row["complete"] = True
     save()
     print(
