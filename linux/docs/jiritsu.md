@@ -60,6 +60,10 @@ Cancellation is checked between completed blocks, preserves `.part` and a cancel
 
 Windows uses `host/zve10_senser.py` to read the declared reply length, check sequence/function identifiers and stop using a failed channel. macOS/Linux keep the vendor reader. `ZVE10_SENSER_FRAMING=stock` or `length` overrides this for compatibility diagnosis; normal use needs no override.
 
+## Startup readiness
+
+Startup publishes the root-ready file only after the shell status and PID have been written, using a temporary file and rename in the same RAM directory. The host polls an absent or incomplete marker within the existing 15-second wait window. A complete UID record must contain four zero values; a non-root UID, other read/USB error, or timeout still stops startup without another loader upload. The last successfully read marker is retained privately as `root-ready-last.txt` on success, a non-root result, or timeout; if a later RuntimeError interrupts polling, the preceding marker is retained too. State distinguishes confirmation, non-root, read error and timeout. This change has offline regression coverage; hardware validation of this version is pending.
+
 ## Close and remove power
 
 Use the client `exit` or a structured `close`. The backend removes and verifies removal of `run.sh`, `libJit.so` and `out.txt` **before** ending the service. Wait for `state: closed`, `service_returned: true`, `loader_files_removed: true`. Then switch off, unplug USB and remove the battery for about 30 seconds. The remaining RAM process ends with power removal.

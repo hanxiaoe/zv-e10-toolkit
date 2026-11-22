@@ -78,8 +78,9 @@ class JiritsuBackend:
 grep ' /tmp_network tmpfs ' /proc/mounts >/dev/null || exit 31
 mkdir '{r}' || exit 32
 exec >'{r}/daemon.log' 2>&1
-cat /proc/$$/status >'{r}/ready'
-echo $$ >'{r}/pid'
+cat /proc/$$/status >'{r}/ready.tmp' || exit 34
+echo $$ >'{r}/pid' || exit 35
+mv '{r}/ready.tmp' '{r}/ready' || exit 36
 while :; do
  if [ -f '{r}/input' ] && [ -f '{r}/go' ]; then
   mv '{r}/input' '{r}/current' || exit 33
@@ -100,24 +101,56 @@ done
         self.status['loader_upload_attempted'] = True
         # A failed response can still mean the constructor ran: never retry blindly.
         upload_verified(self.camera, '/tmp/jiritsu/libJit.so', payload)
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            try:
-                ready = read_file(self.camera, r + '/ready', 16384)
-                if re.search(rb'^Uid:\s+0\s+0\s+0\s+0\s*$', ready, re.M):
-                    break
-                raise ValueError('Loaded process is not root')
-            except RuntimeError as exc:
-                if '0x10000006' not in str(exc):
-                    raise
-                time.sleep(.25)
-        else:
-            raise RuntimeError('No root-ready marker; do not re-upload')
+        self._wait_root_ready()
         self.started = True
         self.status.update(root_uid=0, ram_workspace=r, requires_power_cycle=True)
         self.camera._session_read = self.read_path
         self.camera.dev._session_command = self.command
         self.camera._jiritsu_backend = self
+
+    def _wait_root_ready(self, timeout=15):
+        # Only retry an absent/incomplete marker. A complete non-root UID or
+        # a transport/read error must not be turned into a successful startup.
+        deadline = time.monotonic() + timeout
+        last = None
+        self.status.update(root_ready_state='waiting', root_ready_reads=0)
+        while time.monotonic() < deadline:
+            self.status['root_ready_reads'] += 1
+            try:
+                last = read_file(self.camera, self.ram + '/ready', 16384)
+            except RuntimeError as exc:
+                if '0x10000006' not in str(exc):
+                    self.status['root_ready_state'] = 'read-error'
+                    if last is not None:
+                        self._save_ready_marker(last)
+                    raise
+            except Exception:
+                self.status['root_ready_state'] = 'read-error'
+                if last is not None:
+                    self._save_ready_marker(last)
+                raise
+            else:
+                uid = re.search(rb'^Uid:[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]*\r?$',
+                                last, re.M)
+                if uid:
+                    self._save_ready_marker(last)
+                    if any(int(value) != 0 for value in uid.groups()):
+                        self.status['root_ready_state'] = 'non-root'
+                        raise ValueError('Loaded process is not root; complete UID record; do not re-upload')
+                    self.status['root_ready_state'] = 'root-confirmed'
+                    return
+            time.sleep(.25)
+        self.status['root_ready_state'] = 'timeout'
+        if last is not None:
+            self._save_ready_marker(last)
+        raise RuntimeError('No complete root-ready marker before timeout; do not re-upload')
+
+    def _save_ready_marker(self, data):
+        path = self.session / 'root-ready-last.txt'
+        with path.open('xb') as stream:
+            stream.write(data)
+        path.chmod(0o600)
+        common.restore_owner(path)
 
     def command(self, label, command, timeout=60):
         if not self.started or not isinstance(command, str) or not command.isascii() or len(command) > 8192:

@@ -80,6 +80,11 @@ class Tests(unittest.TestCase):
                                                'upload:/tmp/jiritsu/libJit.so'])
                 self.assertTrue(b.started)
                 self.assertTrue(b.status['workspace_initialized'])
+                script = (Path(folder) / 'root-daemon.sh').read_text()
+                self.assertIn("/ready.tmp' || exit 34", script)
+                self.assertLess(script.index("/pid' || exit 35"),
+                                script.index("/ready' || exit 36"))
+                self.assertNotIn("status >'" + b.ram + "/ready'", script)
 
     def test_initialization_failure_stops_before_loader_checks_or_uploads(self):
         for response in (struct.pack('<I', 0x10000004), struct.pack('<I', 0x1000000d), b'\x00'):
