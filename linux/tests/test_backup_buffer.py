@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'host'))
 import zve10_jiritsu as jit
 import zve10_backup_raw as raw
+import zve10_backup_session as backup
 
 
 class BufferTests(unittest.TestCase):
@@ -72,7 +73,14 @@ class BufferTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '32 MiB'):
             with b.backup_buffer(4096):
                 self.fail('must not read')
-        self.assertEqual(b.run.call_count, 1)
+        commands = [call.args[0] for call in b.run.call_args_list]
+        self.assertFalse(any('mkdir' in cmd or 'mount -t' in cmd for cmd in commands))
+
+    def test_sums_file_uses_lf_endings_for_portable_checking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backup.write_sums(directory, [{'sha256': 'a' * 64, 'file': 'nflasha.read1.bin'}])
+            data = (Path(directory) / 'SHA256SUMS').read_bytes()
+        self.assertEqual(data, b'a' * 64 + b'  nflasha.read1.bin\n')
 
     def test_bad_saved_hash_keeps_part_and_never_promotes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -83,8 +91,9 @@ class BufferTests(unittest.TestCase):
                 sink.write(b'x'*512)
                 return 0, None
             with patch.object(raw, 'OUT', Path(directory)), \
-                    patch.object(raw, 'RESULT', {'reads': []}), \
-                    patch.dict(raw.REGIONS, {'nflasha': 512}), \
+                    patch.object(raw, 'RESULT', {'reads': [], 'regions': {'nflasha': 512}}), \
+                    patch.object(raw.emmc, 'collect', return_value={'partitions': '', 'layout': ''}), \
+                    patch.object(raw.emmc, 'validate', return_value={'nflasha': 512}), \
                     patch.object(raw.common, 'read_path', side_effect=receive), \
                     patch.object(raw.hashlib, 'sha256', side_effect=[real_hash(), real_hash(b'x'*512), mismatch]):
                 with self.assertRaisesRegex(RuntimeError, 'saved file hash'):
@@ -108,6 +117,7 @@ class BufferTests(unittest.TestCase):
             session_backup.raw.RESULT['reads'].append(row)
             return row
         with tempfile.TemporaryDirectory() as directory, \
+                patch.object(session_backup.emmc, 'validate', return_value=dict(nflasha=512, nflashaB0=512, nflashaB1=512)), \
                 patch.object(session_backup.raw, 'receive', side_effect=receive), \
                 patch.object(session_backup.shutil, 'disk_usage', return_value=Mock(free=10**12)):
             with self.assertRaisesRegex(RuntimeError, 'unmount failed'):

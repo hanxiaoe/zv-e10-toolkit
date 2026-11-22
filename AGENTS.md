@@ -1,5 +1,9 @@
 # Agent entry point
 
+## Public publication content
+
+This is an independent public release repository under `publish/`. README pages are for users: title, language switch, purpose, platform support and usage links. Keep Agent instructions here, build/test instructions in CONTRIBUTING.md, and validation evidence in technical documentation. Keep local handoffs, session histories, deleted-file narratives and pending-commit notes outside the publication repository. Recommend two-pass backup verification without repeating the test body's pass count in user introductions. Preserve accurate support boundaries in the validation page; never claim unperformed validation. Keep Chinese and English navigation consistent.
+
 Read README.md and [the session workflow](linux/docs/agent-workflow.md) ([中文](linux/docs/agent-workflow.zh-CN.md)) before camera access. For Jiritsu, also read linux/docs/jiritsu.md. For fastboot writes, use fastboot/docs/recovery.md. The owner's current instructions take precedence; documentation work does not authorize device access.
 
 ## One connection, complete preflight
@@ -10,7 +14,19 @@ Read README.md and [the session workflow](linux/docs/agent-workflow.md) ([中文
 - Use the client for fixed read-only preflight commands: `busybox --list`, `busybox cat /proc/mounts`, `busybox cat /proc/meminfo`, and `busybox cat /proc/self/status`. Do not assume id, df, stat, free or other desktop commands exist. Use only applets listed by the camera. Read shell identity from /proc through a running shell; the `self` status belongs to the command process. Do not claim it proves a persistent shell PID; that needs an explicit shell-PID check within the authorized backend.
 - Jiritsu GET_FILE is for ordinary files. It may return empty content for proc/sys pseudo-files. Read /proc and /sys using shell cat; empty GET_FILE content is not evidence of root loss, process death or an absent device.
 
+## Windows hosts
+
+- Use client --request-file for structured requests on Windows, especially commands, paths and confirmation text with spaces. Save a UTF-8 JSON object with ConvertTo-Json and Set-Content -Encoding UTF8. Inline JSON escaping in PowerShell 5.1 is not reliable for these values. Request-file input does not grant write authorization or supply owner consent.
+
+- `linux/scripts/setup-windows.ps1` creates `.venv/Scripts/python.exe`, installs the pinned dependencies and Sony-PMCA-RE, and runs the server self-test. Add `-Proxy <url>` when downloads need a proxy (pip ignores `HTTP_PROXY`/`HTTPS_PROXY`); if pip reports an SSL error through a proxy, upgrade pip in the new environment first.
+- Service mode needs the `libusb-win32` driver (Zadig) for both camera identities. The validated read-only session ran without administrator rights; use an elevated PowerShell only if opening the device reports access denied.
+- Run `host/zve10_terminal_server.py` directly. The `.sh` launchers and `--client-uid` are macOS/Linux-only; the server sets the session directory ACL to the current user's SID.
+- Windows uses `host/zve10_senser.py` (length-delimited replies); macOS/Linux keep the vendor reader. The libusb 1.0 DLL from `libusb-package` is opt-in (`ZVE10_LIBUSB1=1`); otherwise PyUSB would prefer it over the libusb0 backend and lose the camera.
+- Validated on Windows system 2.03: read-only `inspect`, `boot-check`, a single-pass `raw-backup`, Backup-property writes, and the byte-patch plus `/usr` round trip. Not validated: WBI writing, 2.02, `fastboot/`, BootROM dump, and the file-backup route.
+
 ## RAM, backup and errors
+
+- Raw backups discover user/B0/B1 capacities from matching proc/sysfs metadata and retain the known 16-partition layout guard. Do not replace this with fixed test-unit sizes, pad boot images, truncate the user tail, or accept conflicting geometry. The original 1864 MiB / 4 MiB values are evidence, not universal requirements. WBI capacity/write and restore guards remain independent. Use emmc-info on one ready session for optional sysfs identity; keep CID private and do not install helpers or write chip configuration to identify a device.
 
 - Confirm mounts, not names. On the tested device /tmp_network is tmpfs limited to 1 MiB; /tmp is eMMC-backed. A full 1 MiB data chunk cannot coexist with command/result files in the original mount. Do not put backup chunks in flash directories or change shared mount limits.
 - The public backup CLI defaults to 512 KiB. Larger chunks require an independently verified, dedicated tmpfs with checked capacity/content and sufficient free/reclaimable memory. A separately mounted 8 MiB tmpfs with 4 MiB chunks completed one full 2.03 backup in 940.956 seconds (1.989 MiB/s). The public raw-backup action now accepts chunk_kib=4096 and manages this lifecycle automatically. The default remains 512 KiB. Use the documented action rather than reconstructing a research launcher.

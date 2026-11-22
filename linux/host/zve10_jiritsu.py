@@ -8,11 +8,11 @@ import time
 import uuid
 
 import zve10_common as common
+import zve10_emmc_layout as emmc
 from zve10_read_file_jiritsu import read_file
 
 FIRMWARES = {'2.02': b'30110_05.2025031501', '2.03': b'30110_06.2026060501'}
-REGIONS = {'/dev/nflasha': 1954545664, '/dev/nflashaB0': 4194304,
-           '/dev/nflashaB1': 4194304, '/dev/nflasha5': 62914560}
+REGIONS = {'/dev/nflasha5': 62914560}  # WBI keeps its exact independent guard.
 PAYLOAD_SHA = 'c22deba2d43a6643c628a0dd5e7f524fa7b50dcc766fcee0eb37d667895c4b24'
 
 class BackupCancelled(Exception):
@@ -20,8 +20,11 @@ class BackupCancelled(Exception):
 
 def jcmd(camera, code, data=b''):
     response = camera._sendAdjustControlPacket(0x1001, code, data)
-    if len(response) < 4 or struct.unpack_from('<I', response)[0]:
-        raise RuntimeError('Jiritsu command failed: %d' % code)
+    if len(response) < 4:
+        raise RuntimeError('Jiritsu command %d: short status reply (%d bytes)' % (code, len(response)))
+    status = struct.unpack_from('<I', response)[0]
+    if status:
+        raise RuntimeError('Jiritsu command %d failed: status 0x%08x' % (code, status))
     return response[4:]
 
 def upload_verified(camera, path, data):
@@ -53,6 +56,12 @@ class JiritsuBackend:
         if versions != [self.expected, self.expected]:
             raise RuntimeError('Two exact firmware-version reads required')
         self.status['system_version'] = self.expected.decode()
+        # SET_FILE2 mounts the workspace but cannot create its mountpoint.
+        # Use the firmware's MOUNT initialization before inspecting/uploading
+        # loader files, including on cameras never prepared by earlier tools.
+        self.status['workspace_initialized'] = False
+        jcmd(self.camera, 2, b'\x00\x00')
+        self.status['workspace_initialized'] = True
         for path in ('/tmp/jiritsu/run.sh', '/tmp/jiritsu/libJit.so', '/tmp/jiritsu/out.txt'):
             try:
                 read_file(self.camera, path, 65536)
@@ -69,8 +78,9 @@ class JiritsuBackend:
 grep ' /tmp_network tmpfs ' /proc/mounts >/dev/null || exit 31
 mkdir '{r}' || exit 32
 exec >'{r}/daemon.log' 2>&1
-cat /proc/$$/status >'{r}/ready'
-echo $$ >'{r}/pid'
+cat /proc/$$/status >'{r}/ready.tmp' || exit 34
+echo $$ >'{r}/pid' || exit 35
+mv '{r}/ready.tmp' '{r}/ready' || exit 36
 while :; do
  if [ -f '{r}/input' ] && [ -f '{r}/go' ]; then
   mv '{r}/input' '{r}/current' || exit 33
@@ -91,24 +101,56 @@ done
         self.status['loader_upload_attempted'] = True
         # A failed response can still mean the constructor ran: never retry blindly.
         upload_verified(self.camera, '/tmp/jiritsu/libJit.so', payload)
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            try:
-                ready = read_file(self.camera, r + '/ready', 16384)
-                if re.search(rb'^Uid:\s+0\s+0\s+0\s+0\s*$', ready, re.M):
-                    break
-                raise ValueError('Loaded process is not root')
-            except RuntimeError as exc:
-                if '0x10000006' not in str(exc):
-                    raise
-                time.sleep(.25)
-        else:
-            raise RuntimeError('No root-ready marker; do not re-upload')
+        self._wait_root_ready()
         self.started = True
         self.status.update(root_uid=0, ram_workspace=r, requires_power_cycle=True)
         self.camera._session_read = self.read_path
         self.camera.dev._session_command = self.command
         self.camera._jiritsu_backend = self
+
+    def _wait_root_ready(self, timeout=15):
+        # Only retry an absent/incomplete marker. A complete non-root UID or
+        # a transport/read error must not be turned into a successful startup.
+        deadline = time.monotonic() + timeout
+        last = None
+        self.status.update(root_ready_state='waiting', root_ready_reads=0)
+        while time.monotonic() < deadline:
+            self.status['root_ready_reads'] += 1
+            try:
+                last = read_file(self.camera, self.ram + '/ready', 16384)
+            except RuntimeError as exc:
+                if '0x10000006' not in str(exc):
+                    self.status['root_ready_state'] = 'read-error'
+                    if last is not None:
+                        self._save_ready_marker(last)
+                    raise
+            except Exception:
+                self.status['root_ready_state'] = 'read-error'
+                if last is not None:
+                    self._save_ready_marker(last)
+                raise
+            else:
+                uid = re.search(rb'^Uid:[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)[ \t]*\r?$',
+                                last, re.M)
+                if uid:
+                    self._save_ready_marker(last)
+                    if any(int(value) != 0 for value in uid.groups()):
+                        self.status['root_ready_state'] = 'non-root'
+                        raise ValueError('Loaded process is not root; complete UID record; do not re-upload')
+                    self.status['root_ready_state'] = 'root-confirmed'
+                    return
+            time.sleep(.25)
+        self.status['root_ready_state'] = 'timeout'
+        if last is not None:
+            self._save_ready_marker(last)
+        raise RuntimeError('No complete root-ready marker before timeout; do not re-upload')
+
+    def _save_ready_marker(self, data):
+        path = self.session / 'root-ready-last.txt'
+        with path.open('xb') as stream:
+            stream.write(data)
+        path.chmod(0o600)
+        common.restore_owner(path)
 
     def command(self, label, command, timeout=60):
         if not self.started or not isinstance(command, str) or not command.isascii() or len(command) > 8192:
@@ -160,6 +202,9 @@ done
             finally:
                 self.chunk_bytes = old_chunk
             return
+        # The mount/unmount commands otherwise each wait for the daemon's 1 s
+        # idle poll; the reader itself uses the same fast-poll handshake.
+        self.run('sleep 0.01 && ZV_POLL=0.01')
         mem = self.run('busybox cat /proc/meminfo')
         values = {k: int(v) for k, v in re.findall(
             r'^(MemFree|Cached|Buffers|Shmem):\s+(\d+) kB', mem, re.M)}
@@ -196,12 +241,12 @@ done
                     if rows:
                         if len(rows) != 1 or rows[0][:3] != ['zvbackup', bulk, 'tmpfs']:
                             raise RuntimeError('Unexpected mount identity; do not touch it')
-                        self.run('busybox rm -f ' + bulk + '/chunk; cd /; busybox umount ' + bulk)
+                        self.run('busybox rm -f ' + bulk + '/chunk; cd /; busybox umount ' + bulk + '; ZV_POLL=1')
                         mounts = self.run('busybox cat /proc/mounts')
                         if any(line.split()[1] == bulk for line in mounts.splitlines() if len(line.split()) >= 2):
                             raise RuntimeError('Backup RAM buffer remains mounted')
                 if created:
-                    self.run('busybox rmdir ' + bulk)
+                    self.run('busybox rmdir ' + bulk + '; ZV_POLL=1')
                 self.status['backup_buffer_removed'] = True
             except Exception as exc:
                 self.status['backup_buffer_cleanup_error'] = repr(exc)
@@ -216,12 +261,21 @@ done
                 sink.write(data)
                 return 0, None
             return 0, data
-        if path not in REGIONS:
+        area = path.removeprefix('/dev/')
+        if path not in REGIONS and area not in emmc.AREA_NAMES:
             raise ValueError('Block reads restricted to known user/boot/WBI regions')
         chunk_bytes = self.chunk_bytes
         if type(chunk_bytes) is not int or chunk_bytes not in (524288, 655360, 786432, 1048576, 2097152, 4194304):
             raise ValueError('Unsupported chunk size')
-        name, size = path.split('/')[-1], REGIONS[path]
+        name = path.split('/')[-1]
+        if name in emmc.AREA_NAMES:
+            geometry = emmc.collect(self.camera)
+            regions = emmc.validate(geometry['partitions'], geometry['layout'])
+            if hasattr(self, 'backup_regions') and regions != self.backup_regions:
+                raise ValueError('Runtime block capacity mismatch: geometry changed')
+            size = regions[name]
+        else:
+            size = REGIONS[path]
         if sink is None and size > 64*1048576:
             raise ValueError('Large block reads require a streaming sink')
         live = self.run('cat /sys/class/block/%s/size' % name).strip()
@@ -275,6 +329,92 @@ done
             self.run('rm -f '+chunk_dir+'/chunk; ZV_POLL=1')
             stats['seconds'] = time.monotonic()-started
         return 0, bytes(buffer) if buffer is not None else None
+
+    def read_regular_chunks(self, path, expected_size, chunk_kib=256):
+        """Read a known regular file through bounded RAM chunks and host hashes.
+
+        Avoid a single large GET_FILE response on hosts whose USB driver cannot
+        complete it. The caller must supply the independently known file size.
+        Chunks of 256/512 KiB use the shared 1 MiB /tmp_network mount; larger
+        chunks require an active dedicated buffer (see ``backup_buffer``), the
+        same mount rules the raw backup uses.
+        """
+        if (not self.started or not path.startswith('/') or path.startswith(('/dev/', '/proc/', '/sys/'))
+                or type(expected_size) is not int or not 0 < expected_size <= 32*1048576
+                or type(chunk_kib) is not int or chunk_kib not in (256, 512, 1024, 2048, 4096)):
+            raise ValueError('Invalid bounded regular-file read')
+        if not self.ram.startswith('/tmp_network/zve10-'):
+            raise ValueError('Unexpected RAM workspace')
+        chunk_bytes = chunk_kib * 1024
+        chunk_dir = getattr(self, 'chunk_dir', self.ram)
+        if chunk_bytes > 524288:
+            if not getattr(self, 'dedicated_tmpfs', False):
+                raise ValueError('Large chunks require a verified dedicated tmpfs')
+            mounts = self.run('busybox cat /proc/mounts')
+            rows = [line.split() for line in mounts.splitlines()
+                    if len(line.split()) >= 4 and line.split()[1:3] == [chunk_dir, 'tmpfs']]
+            options = rows[0][3].split(',') if len(rows) == 1 else []
+            capacity = self._mount_capacity(options)
+            if capacity < chunk_bytes + 131072:
+                raise RuntimeError('Dedicated RAM mount too small for bounded read')
+            entries = self.run('busybox ls -A ' + chunk_dir).split()
+            if any(entry != 'regular-chunk' for entry in entries):
+                raise RuntimeError('Dedicated RAM mount contains unexpected files')
+        else:
+            mounts = self.run('busybox cat /proc/mounts')
+            rows = [line.split() for line in mounts.splitlines()
+                    if len(line.split()) >= 4 and line.split()[1] == '/tmp_network']
+            if len(rows) != 1 or rows[0][2] != 'tmpfs':
+                raise RuntimeError('Shared RAM mount identity changed')
+            capacity = self._mount_capacity(rows[0][3].split(','))
+            if capacity < chunk_bytes + 262144:
+                raise RuntimeError('Shared RAM mount too small for bounded read')
+        quoted = common.shquote(path)
+        # Same fast-poll handshake the block reader uses: without it the root
+        # daemon notices a new command only on its default 1 s idle sleep, so
+        # every chunk pays up to a second before it starts.
+        self.run('sleep 0.01 && ZV_POLL=0.01')
+        live_size = self.run('busybox wc -c < ' + quoted).strip()
+        if not live_size.isdecimal() or int(live_size) != expected_size:
+            raise RuntimeError('Regular file size differs from pinned size')
+        common.set_terminal_timeout(self.camera, 30000)
+        chunk = chunk_dir + '/regular-chunk'
+        result = bytearray()
+        stats = dict(chunk_kib=chunk_kib, bytes=0, command_seconds=0.,
+                     transfer_seconds=0., verify_seconds=0.)
+        self.last_regular_stats = stats
+        self.status.update(regular_read_bytes=0, regular_read_chunks=0,
+                           regular_chunk_kib=chunk_kib)
+        try:
+            for offset in range(0, expected_size, chunk_bytes):
+                count = min(chunk_bytes, expected_size - offset)
+                tick = time.monotonic()
+                checksum = self.run(
+                    'busybox dd if=%s of=%s bs=4096 skip=%d count=%d 2>/dev/null && busybox sha256sum %s' %
+                    (quoted, chunk, offset // 4096, (count + 4095) // 4096, chunk))
+                stats['command_seconds'] += time.monotonic() - tick
+                tick = time.monotonic()
+                data = read_file(self.camera, chunk, chunk_bytes)
+                stats['transfer_seconds'] += time.monotonic() - tick
+                tick = time.monotonic()
+                if (len(data) != count or not re.fullmatch(r'[0-9a-f]{64}\s+\S+\s*', checksum)
+                        or hashlib.sha256(data).hexdigest() != checksum.split()[0]):
+                    raise RuntimeError('Regular-file chunk length/hash mismatch')
+                result.extend(data)
+                stats['verify_seconds'] += time.monotonic() - tick
+                stats['bytes'] += len(data)
+                self.status['regular_read_bytes'] += len(data)
+                self.status['regular_read_chunks'] += 1
+        finally:
+            self.run('busybox rm -f ' + chunk + '; ZV_POLL=1')
+        return bytes(result)
+
+    @staticmethod
+    def _mount_capacity(options):
+        """Return a tmpfs capacity parsed from its mount options, or 0."""
+        value = next((item[5:] for item in options if item.startswith('size=')), '')
+        match = re.fullmatch(r'(\d+)([kKmM]?)', value)
+        return int(match[1]) * {'': 1, 'k': 1024, 'm': 1048576}[match[2].lower()] if match else 0
 
     def close(self):
         if self.started:
