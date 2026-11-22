@@ -6,7 +6,9 @@ The user area and boot areas B0/B1 need not have the same capacities as the orig
 
 The complete Linux-visible user area includes gaps and the tail beyond the last partition. Each boot area is read at its own confirmed size, without padding or truncation. The confirmed byte counts are saved in `manifest.json` under `regions`; free host space is calculated from them. Geometry is rechecked before each pass. Exact lengths, saved-file hashes and double-pass comparisons remain required. Boot-area differences stop completion; live user-area differences are retained for review. Successful reading is not proof that an image is safe to restore to another camera.
 
-Current bounds are positive 4 KiB-aligned regions below 4 GiB, boot areas no larger than 32 MiB, and the unchanged sample logical layout. These are supported read-path bounds, not a claim that every eMMC has these sizes. No restore or WBI-write guard is relaxed. Capacity-variant support has offline tests, including the reported 1888 MiB user area and 2 MiB boot areas; it still needs hardware confirmation on that variant.
+Current bounds are positive 4 KiB-aligned regions below 4 GiB, boot areas no larger than 32 MiB, and the unchanged sample logical layout. These are supported read-path bounds, not a claim that every eMMC has these sizes. No restore or WBI-write guard is relaxed.
+
+The 1888 MiB user area with 2 MiB each for B0/B1 has offline coverage and community hardware confirmation. The [Windows 2.02 report](https://github.com/dino2048/zv-e10-toolkit/issues/7#issuecomment-7063569594) confirms complete two-pass backups and saved-file hash verification: B0/B1 matched between passes, while the user area differed by 92 bytes within the `/setting` partition. The [Windows 2.03 report](https://github.com/dino2048/ZV-E10-5GHz-WiFi-Unlock/issues/6) confirms identical two-pass backups across all regions, with all six saved-file hashes independently verified.
 
 ## Query through one existing ready session
 
